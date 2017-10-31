@@ -9,6 +9,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <mutex>
+#include "affinity.hpp"
 
 // F = void(buffin*, buffout*, buffin_size, buffout_size) F have to be thread-safe
 
@@ -38,10 +39,17 @@ void crypto_test<F, max_buff_size, max_threads_count>::test_buffer_size(std::fun
 	std::condition_variable trigger_cv; // if notifyed all threads starts
 	std::mutex thread_mutex;
 	bool threads_started = false; // protected by thread_mutex
-    constexpr size_t iterations = 1000;
+    constexpr size_t iterations = 1000000;
 
     auto thread_lambda = [&init_buffer_lambda, &thread_results, &iterations, this, &thread_cv, &thread_mutex, &threads_started, &trigger_cv, &thread_ready_flag]
 	(size_t buff_size, size_t return_array_index) {
+        try {
+            stdplus::affinity::set_current_thread_affinity(return_array_index % 8);
+        }
+        catch (const std::exception & ex) {
+            std::cerr << "Can not set CPU: " << ex.what();
+        }
+
         std::vector<unsigned char> inbuff(buff_size);
         std::vector<unsigned char> outbuff(buff_size);
         init_buffer_lambda(inbuff.data(), outbuff.data(), buff_size, buff_size);
@@ -61,10 +69,22 @@ void crypto_test<F, max_buff_size, max_threads_count>::test_buffer_size(std::fun
     };
 
 
-    for (size_t i=1; i < max_buff_size; i = std::ceil(i*1.5) ) // iterate through buffer size
+    for (size_t ii=4096; ii < max_buff_size;) // iterate through buffer size
     {
-        for (size_t threads_count=0; threads_count<max_threads_count; threads_count++) // iterate through threads count
+        if (ii>=256)
+            ii *= 1.5;
+        else
+            ii++;
+
+        size_t i = ii;
+        if (i > 256) {
+          i = (i/64)*64;
+          // no need to remove dupicate for this particular parametes ( *= 1.5 for > 256 , round to 64)
+        }
+
+        //for (size_t threads_count=0; threads_count<max_threads_count; threads_count++) // iterate through threads count
         {
+            size_t threads_count = 8;
             thread_results.fill(0);
 			thread_ready_flag.fill(false); // all threads are not ready
             for (size_t j=0; j<=threads_count; j++) // iterate through threads count
@@ -94,6 +114,7 @@ void crypto_test<F, max_buff_size, max_threads_count>::test_buffer_size(std::fun
             // threads_count+1 becouse array index starts from 0
 
         }
+        std::cout << "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b" << i << '/' << max_buff_size << std::flush;
     }
 }
 
@@ -107,7 +128,7 @@ int main() {
     unsigned char key[crypto_onetimeauth_KEYBYTES];
     std::fill_n(key, crypto_onetimeauth_KEYBYTES, 0xfd);
 //     crypto_onetimeauth_keygen(key); // was introduced in libsodium 1.0.12.
-    auto poly = [&key](unsigned char* buff_in, unsigned char* buff_out, size_t in_size, size_t out_size ){
+    auto poly = [&key](unsigned char* buff_in, unsigned char* buff_out, size_t in_size, size_t){
         crypto_onetimeauth(buff_out, buff_in, in_size, key);
     };
     {
@@ -116,7 +137,7 @@ int main() {
     }
 
     // poly verify
-    auto poly_verify = [&key](unsigned char* buff_in, unsigned char* buff_out, size_t in_size, size_t out_size ){
+    auto poly_verify = [&key](unsigned char* buff_in, unsigned char* buff_out, size_t in_size, size_t){
         if (crypto_onetimeauth_verify(buff_out, buff_in, in_size, key) != 0) {
            std::cerr << "Poly verification fail" << std::endl;
            std::abort();
